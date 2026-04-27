@@ -20,6 +20,8 @@ function roomSnapshot() {
     online:   r.online,
     lastSeen: r.lastSeen,
     viewers:  r.viewerIds.size,
+    battery:  r.battery ?? -1,
+    torchOn:  r.torchOn ?? false,
   }));
 }
 
@@ -76,6 +78,23 @@ io.on('connection', (socket) => {
     }
 
     broadcastRoomUpdate();
+  });
+
+  // Camera 回報狀態（電量、手電筒）
+  socket.on('camera-status', ({ roomId, battery, torchOn }) => {
+    const room = rooms.get(roomId);
+    if (!room) return;
+    room.battery = battery;
+    room.torchOn = torchOn;
+    io.to(roomId).emit('camera-status', { roomId, battery, torchOn });
+  });
+
+  // Viewer 送指令給 Camera
+  socket.on('camera-command', ({ roomId, command }) => {
+    const room = rooms.get(roomId);
+    if (room?.socketId) {
+      io.to(room.socketId).emit('camera-command', { command });
+    }
   });
 
   // WebRTC 轉發：offer / answer / ice-candidate
