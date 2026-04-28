@@ -20,8 +20,8 @@ function roomSnapshot() {
     online:   r.online,
     lastSeen: r.lastSeen,
     viewers:  r.viewerIds.size,
-    battery:  r.battery || -1,
-    torchOn:  r.torchOn || false,
+    battery:  r.battery ?? -1,
+    torchOn:  r.torchOn ?? false,
   }));
 }
 
@@ -76,6 +76,7 @@ io.on('connection', (socket) => {
     broadcastRoomUpdate();
   });
 
+  // WebRTC 轉發：offer / answer / ice-candidate
   socket.on('offer', ({ to, offer }) => {
     io.to(to).emit('offer', { from: socket.id, roomId: myRoomId, offer });
   });
@@ -88,6 +89,7 @@ io.on('connection', (socket) => {
     io.to(to).emit('ice-candidate', { from: socket.id, candidate });
   });
 
+  // 相機狀態更新 (Camera -> Server)
   socket.on('camera-status', (status) => {
     const { roomId, battery, torchOn } = status;
     const room = rooms.get(roomId);
@@ -100,6 +102,7 @@ io.on('connection', (socket) => {
     }
   });
 
+  // 遠端指令 (Viewer -> Server -> Camera)
   socket.on('camera-command', ({ roomId, command }) => {
     const room = rooms.get(roomId);
     if (room && room.socketId) {
