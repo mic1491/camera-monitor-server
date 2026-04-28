@@ -6,6 +6,8 @@ const app = express();
 const httpServer = createServer(app);
 const io = new Server(httpServer, {
   cors: { origin: '*' },
+  pingTimeout: 10000,
+  pingInterval: 5000,
 });
 
 app.use(express.json());
@@ -43,6 +45,7 @@ io.on('connection', (socket) => {
     myRole   = 'camera';
     myRoomId = rid;
 
+    // 清理可能存在的舊連線狀態
     const prev = rooms.get(rid);
     rooms.set(rid, {
       id:        rid,
@@ -57,7 +60,7 @@ io.on('connection', (socket) => {
 
     socket.join(rid);
     broadcastRoomUpdate();
-    console.log(`[Camera] Joined room: ${rid}, socketId: ${socket.id}`);
+    console.log(`[Camera] ${label} joined room: ${rid}. Current members in room: ${io.sockets.adapter.rooms.get(rid)?.size || 0}`);
   });
 
   socket.on('join-viewer', (roomId) => {
@@ -67,23 +70,20 @@ io.on('connection', (socket) => {
 
     const room = rooms.get(rid);
     if (!room) {
-        console.log(`[Viewer] Failed to join: Room ${rid} not found`);
-        return;
+        console.log(`[Viewer] Room ${rid} not found. Attempting join anyway.`);
     }
 
-    room.viewerIds.add(socket.id);
+    if (room) { room.viewerIds.add(socket.id); }
     socket.join(rid);
 
-    console.log(`[Viewer] Joined room: ${rid}, notifying camera(s) in room`);
-    // 改用房間廣播發送 viewer-joined，確保相機一定收得到
+    console.log(`[Viewer] Joined room: ${rid}, requesting offer from camera...`);
+    // 廣播給房間內所有人（主要是相機）
     socket.to(rid).emit('viewer-joined', socket.id);
-    
     broadcastRoomUpdate();
   });
 
-  // WebRTC 轉發：offer / answer / ice-candidate
+  // WebRTC 轉發
   socket.on('offer', ({ to, offer }) => {
-    // offer 包含 roomId，方便接收端過濾
     io.to(to).emit('offer', { from: socket.id, roomId: myRoomId, offer });
   });
 
@@ -95,7 +95,7 @@ io.on('connection', (socket) => {
     io.to(to).emit('ice-candidate', { from: socket.id, candidate });
   });
 
-  // 相機狀態更新 (Camera -> Server)
+  // 相機狀態
   socket.on('camera-status', (status) => {
     const rid = String(status.roomId).trim();
     const room = rooms.get(rid);
@@ -108,15 +108,18 @@ io.on('connection', (socket) => {
     }
   });
 
-  // 遠端指令 (Viewer -> Server -> Camera)
+  // 遠端指令 - 採用雙重保險發送
   socket.on('camera-command', ({ roomId, command }) => {
     const rid = String(roomId).trim();
     const room = rooms.get(rid);
-    if (room) {
-      console.log(`[Command] Broadcast ${command} to room ${rid}`);
-      io.to(rid).emit('camera-command', { roomId: rid, command });
-    } else {
-      console.log(`[Command] Failed: Room ${rid} not found.`);
+    console.log(`[Command] ${command} for room ${rid}`);
+    
+    // 1. 對房間頻道廣播 (推薦)
+    io.to(rid).emit('camera-command', { roomId: rid, command });
+    
+    // 2. 如果知道特定的 socketId，額外補發 (雙保險)
+    if (room && room.socketId && room.socketId !== socket.id) {
+        io.to(room.socketId).emit('camera-command', { roomId: rid, command });
     }
   });
 
@@ -128,7 +131,6 @@ io.on('connection', (socket) => {
         room.socketId = null;
         io.to(myRoomId).emit('camera-offline', myRoomId);
         broadcastRoomUpdate();
-        console.log(`[Camera] Offline: ${myRoomId}`);
       }
     } else if (myRole === 'viewer' && viewingRoomId) {
       const room = rooms.get(viewingRoomId);
@@ -136,7 +138,6 @@ io.on('connection', (socket) => {
         room.viewerIds.delete(socket.id);
         socket.to(viewingRoomId).emit('viewer-left', socket.id);
         broadcastRoomUpdate();
-        console.log(`[Viewer] Left room: ${viewingRoomId}`);
       }
     }
   });
