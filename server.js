@@ -41,7 +41,7 @@ io.on('connection', (socket) => {
   let viewingRoomId = null;
 
   socket.on('join-camera', ({ roomId, label }) => {
-    const rid = String(roomId).trim();
+    const rid = String(roomId).trim().toLowerCase();
     myRole   = 'camera';
     myRoomId = rid;
 
@@ -73,7 +73,7 @@ io.on('connection', (socket) => {
   });
 
   socket.on('join-viewer', (roomId) => {
-    const rid = String(roomId).trim();
+    const rid = String(roomId).trim().toLowerCase();
     myRole        = 'viewer';
     viewingRoomId = rid;
 
@@ -105,21 +105,22 @@ io.on('connection', (socket) => {
   socket.on('ice-candidate', ({ to, candidate }) => {
     io.to(to).emit('ice-candidate', { from: socket.id, candidate });
   });
+// 相機狀態
+socket.on('camera-status', (status) => {
+  const rid = String(status.roomId).trim().toLowerCase();
+  const room = rooms.get(rid);
+  if (room) {
+    room.battery = status.battery;
+    room.torchOn = status.torchOn;
+    room.lastSeen = new Date().toISOString();
+    socket.to(rid).emit('camera-status', { ...status, roomId: rid });
+    broadcastRoomUpdate();
+  }
+});
 
-  socket.on('camera-status', (status) => {
-    const rid = String(status.roomId).trim();
-    const room = rooms.get(rid);
-    if (room) {
-      room.battery = status.battery;
-      room.torchOn = status.torchOn;
-      room.lastSeen = new Date().toISOString();
-      socket.to(rid).emit('camera-status', { ...status, roomId: rid });
-      broadcastRoomUpdate();
-    }
-  });
 
   socket.on('camera-command', ({ roomId, command }) => {
-    const rid = String(roomId).trim();
+    const rid = String(roomId).trim().toLowerCase();
     const room = rooms.get(rid);
     if (room && room.socketId) {
       console.log(`[Command] RELAY: ${command} -> room ${rid} (socket ${room.socketId})`);
