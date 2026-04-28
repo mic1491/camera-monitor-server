@@ -12,7 +12,6 @@ const io = new Server(httpServer, {
 
 app.use(express.json());
 
-// rooms: Map<roomId, { id, label, online, lastSeen, socketId, viewerIds: Set<string>, battery, torchOn }>
 const rooms = new Map();
 
 function roomSnapshot() {
@@ -65,9 +64,8 @@ io.on('connection', (socket) => {
     
     // 如果已有 Viewer 在等，立刻通知相機發起連線
     if (viewerIds.size > 0) {
-        console.log(`[Camera] Notifying camera in ${rid} about ${viewerIds.size} waiting viewers`);
-        // 廣播給房間內所有人（包含剛加入的相機）
-        io.to(rid).emit('viewer-joined', 'existing-viewer');
+        console.log(`[Camera] Notifying camera in ${rid} to start stream for waiting viewers`);
+        socket.emit('viewer-joined', 'existing-viewer');
     }
   });
 
@@ -78,8 +76,7 @@ io.on('connection', (socket) => {
 
     const room = rooms.get(rid);
     if (!room) {
-        // 即使房間沒創立也允許加入，預留給先開監控的情況
-        rooms.set(rid, { id: rid, label: '正在搜尋...', online: false, viewerIds: new Set(), battery: -1, torchOn: false });
+        rooms.set(rid, { id: rid, label: '搜尋中...', online: false, viewerIds: new Set(), battery: -1, torchOn: false });
     }
 
     const currentRoom = rooms.get(rid);
@@ -87,8 +84,13 @@ io.on('connection', (socket) => {
     socket.join(rid);
     console.log(`[Viewer] JOIN: ${rid} (socket ${socket.id})`);
 
-    // 重點：對整個房間廣播，確保相機一定收得到
-    io.to(rid).emit('viewer-joined', socket.id);
+    // 通知相機有新的觀看者
+    if (currentRoom.socketId) {
+        io.to(currentRoom.socketId).emit('viewer-joined', socket.id);
+    }
+    // 雙重保險：也對房間發送
+    socket.to(rid).emit('viewer-joined', socket.id);
+    
     broadcastRoomUpdate();
   });
 
@@ -118,8 +120,13 @@ io.on('connection', (socket) => {
 
   socket.on('camera-command', ({ roomId, command }) => {
     const rid = String(roomId).trim().toLowerCase();
-    console.log(`[Command] RELAY: ${command} to room ${rid}`);
-    // 直接對整個房間廣播指令，最穩定
+    const room = rooms.get(rid);
+    console.log(`[Command] RELAY: ${command} -> room ${rid}`);
+    
+    // 雙重保險：發送給特定 Socket 且廣播到房間
+    if (room && room.socketId) {
+        io.to(room.socketId).emit('camera-command', { roomId: rid, command });
+    }
     io.to(rid).emit('camera-command', { roomId: rid, command });
   });
 
@@ -136,7 +143,7 @@ io.on('connection', (socket) => {
       const room = rooms.get(viewingRoomId);
       if (room) {
         room.viewerIds.delete(socket.id);
-        io.to(viewingRoomId).emit('viewer-left', socket.id);
+        socket.to(viewingRoomId).emit('viewer-left', socket.id);
         broadcastRoomUpdate();
       }
     }
