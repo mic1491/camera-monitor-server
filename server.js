@@ -50,13 +50,15 @@ io.on('connection', (socket) => {
     myRoomId = rid;
 
     const prev = rooms.get(rid);
+    const viewerIds = prev ? prev.viewerIds : new Set();
+    
     rooms.set(rid, {
       id:        rid,
       label:     label,
       online:    true,
       lastSeen:  new Date().toISOString(),
       socketId:  socket.id,
-      viewerIds: prev ? prev.viewerIds : new Set(),
+      viewerIds: viewerIds,
       battery:   -1,
       torchOn:   false,
     });
@@ -65,10 +67,12 @@ io.on('connection', (socket) => {
     broadcastRoomUpdate();
     logToClient(`[Server] Camera ${label} joined room ${rid}`);
     
-    const currentRoom = rooms.get(rid);
-    if (currentRoom.viewerIds.size > 0) {
-        logToClient(`[Server] Notifying new camera about ${currentRoom.viewerIds.size} waiting viewers`);
-        socket.emit('viewer-joined', 'existing-viewer');
+    // 重要修正：如果有等待中的 Viewer，將他們的真實 socketId 逐一發給相機
+    if (viewerIds.size > 0) {
+        logToClient(`[Server] Notifying new camera about ${viewerIds.size} waiting viewers individually`);
+        viewerIds.forEach(vId => {
+            socket.emit('viewer-joined', vId);
+        });
     }
   });
 
@@ -78,7 +82,7 @@ io.on('connection', (socket) => {
     viewingRoomId = rid;
 
     if (!rooms.has(rid)) {
-        rooms.set(rid, { id: rid, label: '搜尋中...', online: false, viewerIds: new Set(), battery: -1, torchOn: false });
+        rooms.set(rid, { id: rid, label: '正在連線...', online: false, viewerIds: new Set(), battery: -1, torchOn: false });
     }
 
     const room = rooms.get(rid);
@@ -86,10 +90,12 @@ io.on('connection', (socket) => {
     socket.join(rid);
     logToClient(`[Server] Viewer joined room ${rid}`);
 
+    // 通知房間內的相機有新的觀看者
     if (room.socketId) {
+        logToClient(`[Server] Notifying camera socket ${room.socketId}`);
         io.to(room.socketId).emit('viewer-joined', socket.id);
     }
-    // 同時對房間廣播
+    // 雙重保險廣播
     socket.to(rid).emit('viewer-joined', socket.id);
     
     broadcastRoomUpdate();
@@ -122,15 +128,7 @@ io.on('connection', (socket) => {
   socket.on('camera-command', ({ roomId, command }) => {
     const rid = String(roomId).trim().toLowerCase();
     logToClient(`[Server] RELAYING command '${command}' to room ${rid}`);
-    
-    // 終極發送：對該房間內的所有裝置發送（包含相機）
     io.in(rid).emit('camera-command', { roomId: rid, command });
-    
-    // 同時檢查是否有相機在線
-    const room = rooms.get(rid);
-    if (!room || !room.online) {
-        logToClient(`[Server] Warning: Target room ${rid} is offline according to Map`);
-    }
   });
 
   socket.on('disconnect', () => {
@@ -141,7 +139,6 @@ io.on('connection', (socket) => {
         room.socketId = null;
         io.to(myRoomId).emit('camera-offline', myRoomId);
         broadcastRoomUpdate();
-        console.log(`[Server] Camera left room ${myRoomId}`);
       }
     } else if (myRole === 'viewer' && viewingRoomId) {
       const room = rooms.get(viewingRoomId);
