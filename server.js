@@ -106,10 +106,10 @@ io.on('connection', (socket) => {
   socket.on('camera-command', ({ roomId, command }) => {
     const room = rooms.get(roomId);
     if (room && room.socketId) {
-      console.log(`[Command] Relay ${command} to camera ${room.socketId}`);
-      io.to(room.socketId).emit('camera-command', { command });
+      console.log(`[Command] Relay ${command} to room ${roomId} (socket: ${room.socketId})`);
+      io.to(room.socketId).emit('camera-command', { roomId, command });
     } else {
-      console.log(`[Command] Failed: Room ${roomId} or camera socket not found`);
+      console.log(`[Command] Failed: Room ${roomId} not found or camera offline. Available rooms: ${Array.from(rooms.keys()).join(', ')}`);
     }
   });
 
