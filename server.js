@@ -10,7 +10,7 @@ const io = new Server(httpServer, {
 
 app.use(express.json());
 
-// rooms: { [roomId]: { id, label, online, lastSeen, socketId, viewerIds: Set<string> } }
+// rooms: { [roomId]: { id, label, online, lastSeen, socketId, viewerIds: Set<string>, battery, torchOn } }
 const rooms = new Map();
 
 function roomSnapshot() {
@@ -20,6 +20,8 @@ function roomSnapshot() {
     online:   r.online,
     lastSeen: r.lastSeen,
     viewers:  r.viewerIds.size,
+    battery:  r.battery || -1,
+    torchOn:  r.torchOn || false,
   }));
 }
 
@@ -27,20 +29,15 @@ function broadcastRoomUpdate() {
   io.emit('room-update', roomSnapshot());
 }
 
-// ── REST API ──────────────────────────────────────────────────────────────────
-
 app.get('/api/rooms', (_req, res) => {
   res.json(roomSnapshot());
 });
 
-// ── Socket.IO ─────────────────────────────────────────────────────────────────
-
 io.on('connection', (socket) => {
-  let myRole        = null;   // 'camera' | 'viewer'
+  let myRole        = null;
   let myRoomId      = null;
   let viewingRoomId = null;
 
-  // Camera 端加入
   socket.on('join-camera', ({ roomId, label }) => {
     myRole   = 'camera';
     myRoomId = roomId;
@@ -53,13 +50,15 @@ io.on('connection', (socket) => {
       lastSeen:  new Date().toISOString(),
       socketId:  socket.id,
       viewerIds: prev ? prev.viewerIds : new Set(),
+      battery:   prev ? prev.battery : -1,
+      torchOn:   prev ? prev.torchOn : false,
     });
 
     socket.join(roomId);
     broadcastRoomUpdate();
+    console.log(`[Camera] ${label} (${roomId}) joined. socketId: ${socket.id}`);
   });
 
-  // Viewer 端加入某房間
   socket.on('join-viewer', (roomId) => {
     myRole        = 'viewer';
     viewingRoomId = roomId;
@@ -70,15 +69,13 @@ io.on('connection', (socket) => {
     room.viewerIds.add(socket.id);
     socket.join(roomId);
 
-    // 通知 Camera 有新 Viewer
     if (room.socketId) {
+      console.log(`[Viewer] Joined ${roomId}, notifying camera ${room.socketId}`);
       io.to(room.socketId).emit('viewer-joined', socket.id);
     }
-
     broadcastRoomUpdate();
   });
 
-  // WebRTC 轉發：offer / answer / ice-candidate
   socket.on('offer', ({ to, offer }) => {
     io.to(to).emit('offer', { from: socket.id, roomId: myRoomId, offer });
   });
@@ -91,13 +88,33 @@ io.on('connection', (socket) => {
     io.to(to).emit('ice-candidate', { from: socket.id, candidate });
   });
 
-  // 斷線處理
+  socket.on('camera-status', (status) => {
+    const { roomId, battery, torchOn } = status;
+    const room = rooms.get(roomId);
+    if (room) {
+      room.battery = battery;
+      room.torchOn = torchOn;
+      room.lastSeen = new Date().toISOString();
+      socket.to(roomId).emit('camera-status', status);
+      broadcastRoomUpdate();
+    }
+  });
+
+  socket.on('camera-command', ({ roomId, command }) => {
+    const room = rooms.get(roomId);
+    if (room && room.socketId) {
+      console.log(`[Command] Relay ${command} to camera ${room.socketId}`);
+      io.to(room.socketId).emit('camera-command', { command });
+    } else {
+      console.log(`[Command] Failed: Room ${roomId} or camera socket not found`);
+    }
+  });
+
   socket.on('disconnect', () => {
     if (myRole === 'camera' && myRoomId) {
       const room = rooms.get(myRoomId);
       if (room) {
         room.online   = false;
-        room.lastSeen = new Date().toISOString();
         room.socketId = null;
         io.to(myRoomId).emit('camera-offline', myRoomId);
         broadcastRoomUpdate();
@@ -106,13 +123,14 @@ io.on('connection', (socket) => {
       const room = rooms.get(viewingRoomId);
       if (room) {
         room.viewerIds.delete(socket.id);
+        if (room.socketId) {
+            io.to(room.socketId).emit('viewer-left', socket.id);
+        }
         broadcastRoomUpdate();
       }
     }
   });
 });
-
-// ── 啟動 ───────────────────────────────────────────────────────────────────────
 
 const PORT = process.env.PORT || 3000;
 httpServer.listen(PORT, () => {
