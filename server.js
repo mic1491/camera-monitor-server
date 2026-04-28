@@ -104,12 +104,14 @@ io.on('connection', (socket) => {
 
   // 遠端指令 (Viewer -> Server -> Camera)
   socket.on('camera-command', ({ roomId, command }) => {
-    const room = rooms.get(roomId);
-    if (room && room.socketId) {
-      console.log(`[Command] Relay ${command} to room ${roomId} (socket: ${room.socketId})`);
-      io.to(room.socketId).emit('camera-command', { roomId, command });
+    const rid = String(roomId).trim();
+    const room = rooms.get(rid);
+    if (room) {
+      console.log(`[Command] Broadcast ${command} to room ${rid}`);
+      // 使用 to(rid) 而非 to(socketId)，更穩定！
+      io.to(rid).emit('camera-command', { roomId: rid, command });
     } else {
-      console.log(`[Command] Failed: Room ${roomId} not found or camera offline. Available rooms: ${Array.from(rooms.keys()).join(', ')}`);
+      console.log(`[Command] Failed: Room ${rid} not found. Available: ${Array.from(rooms.keys()).join(', ')}`);
     }
   });
 
