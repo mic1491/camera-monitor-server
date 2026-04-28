@@ -44,28 +44,32 @@ io.on('connection', (socket) => {
     myRole   = 'camera';
     myRoomId = rid;
 
+    // 如果該房間已有相機，先強制清理
     const prev = rooms.get(rid);
-    const viewerIds = prev ? prev.viewerIds : new Set();
-    
+    if (prev && prev.socketId && prev.socketId !== socket.id) {
+        console.log(`[Camera] Evicting old socket ${prev.socketId} for room ${rid}`);
+        io.to(prev.socketId).emit('camera-offline', rid);
+    }
+
     rooms.set(rid, {
       id:        rid,
       label:     label,
       online:    true,
       lastSeen:  new Date().toISOString(),
       socketId:  socket.id,
-      viewerIds: viewerIds,
-      battery:   prev ? prev.battery : -1,
-      torchOn:   prev ? prev.torchOn : false,
+      viewerIds: prev ? prev.viewerIds : new Set(),
+      battery:   -1,
+      torchOn:   false,
     });
 
     socket.join(rid);
     broadcastRoomUpdate();
-    console.log(`[Camera] JOIN: ${rid} (socket ${socket.id})`);
+    console.log(`[Camera] JOIN: ${rid} (socket: ${socket.id})`);
     
-    // 如果已有 Viewer 在等，立刻通知相機發起連線
-    if (viewerIds.size > 0) {
-        console.log(`[Camera] Notifying camera in ${rid} to start stream for waiting viewers`);
-        socket.emit('viewer-joined', 'existing-viewer');
+    const currentRoom = rooms.get(rid);
+    if (currentRoom.viewerIds.size > 0) {
+        console.log(`[Camera] ${rid} has ${currentRoom.viewerIds.size} waiting viewers. Requesting initial offer.`);
+        socket.emit('viewer-joined', 'existing');
     }
   });
 
@@ -74,26 +78,23 @@ io.on('connection', (socket) => {
     myRole        = 'viewer';
     viewingRoomId = rid;
 
-    const room = rooms.get(rid);
-    if (!room) {
+    if (!rooms.has(rid)) {
         rooms.set(rid, { id: rid, label: '搜尋中...', online: false, viewerIds: new Set(), battery: -1, torchOn: false });
     }
 
-    const currentRoom = rooms.get(rid);
-    currentRoom.viewerIds.add(socket.id);
+    const room = rooms.get(rid);
+    room.viewerIds.add(socket.id);
     socket.join(rid);
-    console.log(`[Viewer] JOIN: ${rid} (socket ${socket.id})`);
+    console.log(`[Viewer] JOIN: ${rid} (socket: ${socket.id})`);
 
-    // 通知相機有新的觀看者
-    if (currentRoom.socketId) {
-        io.to(currentRoom.socketId).emit('viewer-joined', socket.id);
+    if (room.online && room.socketId) {
+        console.log(`[Viewer] Requesting offer from camera ${room.socketId}`);
+        io.to(room.socketId).emit('viewer-joined', socket.id);
     }
-    // 雙重保險：也對房間發送
-    socket.to(rid).emit('viewer-joined', socket.id);
-    
     broadcastRoomUpdate();
   });
 
+  // WebRTC 轉發
   socket.on('offer', ({ to, offer }) => {
     io.to(to).emit('offer', { from: socket.id, roomId: myRoomId, offer });
   });
@@ -121,13 +122,16 @@ io.on('connection', (socket) => {
   socket.on('camera-command', ({ roomId, command }) => {
     const rid = String(roomId).trim().toLowerCase();
     const room = rooms.get(rid);
-    console.log(`[Command] RELAY: ${command} -> room ${rid}`);
+    console.log(`[Command] RELAY: ${command} to room ${rid}`);
     
-    // 雙重保險：發送給特定 Socket 且廣播到房間
-    if (room && room.socketId) {
+    if (room && room.online && room.socketId) {
+        console.log(`[Command] Sending to camera socket: ${room.socketId}`);
         io.to(room.socketId).emit('camera-command', { roomId: rid, command });
+    } else {
+        console.log(`[Command] FAILED: Camera for room ${rid} is offline or no socketId`);
     }
-    io.to(rid).emit('camera-command', { roomId: rid, command });
+    // 雙重保險：房間廣播
+    socket.to(rid).emit('camera-command', { roomId: rid, command });
   });
 
   socket.on('disconnect', () => {
@@ -138,6 +142,7 @@ io.on('connection', (socket) => {
         room.socketId = null;
         io.to(myRoomId).emit('camera-offline', myRoomId);
         broadcastRoomUpdate();
+        console.log(`[Camera] LEFT: ${myRoomId}`);
       }
     } else if (myRole === 'viewer' && viewingRoomId) {
       const room = rooms.get(viewingRoomId);
@@ -145,6 +150,7 @@ io.on('connection', (socket) => {
         room.viewerIds.delete(socket.id);
         socket.to(viewingRoomId).emit('viewer-left', socket.id);
         broadcastRoomUpdate();
+        console.log(`[Viewer] LEFT: ${viewingRoomId}`);
       }
     }
   });
